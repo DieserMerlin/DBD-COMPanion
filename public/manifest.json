@@ -1,0 +1,178 @@
+{
+  "manifest_version": 1,
+  "type": "WebApp",
+  "meta": {
+    "name": "DBD COMPanion",
+    "author": "Merlin",
+    "version": "0.1.2",
+    "minimum-overwolf-version": "0.160.0",
+    "description": "DBD companion app for the competitive scene.",
+    "dock_button_title": "DBD COMPanion",
+    "icon": "icons/IconMouseOver.png",
+    "icon_gray": "icons/IconMouseNormal.png",
+    "launcher_icon": "icons/desktop-icon.ico",
+    "window_icon": "icons/IconMouseOver.png"
+  },
+  "permissions": [
+    "Hotkeys",
+    "GameInfo",
+    "FileSystem"
+  ],
+  "data": {
+    "start_window": "background",
+    "hotkeys": {
+      "app_showhide": {
+        "title": "Main Window: Show/Hide",
+        "action-type": "toggle",
+        "default": "Alt+C"
+      },
+      "mode_1v1": {
+        "title": "Switch to 1v1 mode",
+        "action-type": "custom",
+        "default": "Alt+Shift+1"
+      },
+      "mode_scrim": {
+        "title": "Switch to Scrim/Tournament mode",
+        "action-type": "custom",
+        "default": "Alt+Shift+2"
+      },
+      "mode_1v1_switch_surv": {
+        "title": "Mode 1v1: Switch to Survivor",
+        "action-type": "custom",
+        "default": "Alt+1"
+      },
+      "mode_1v1_switch_kllr": {
+        "title": "Mode 1v1: Switch to Killer",
+        "action-type": "custom",
+        "default": "Alt+2"
+      },
+      "mode_1v1_start_stop_timer": {
+        "title": "Mode 1v1: Start/Stop current timer",
+        "action-type": "custom",
+        "default": "Alt+T"
+      },
+      "mode_1v1_reset_timer": {
+        "title": "Mode 1v1: Reset current timer",
+        "action-type": "custom",
+        "default": "Alt+R"
+      },
+      "mode_1v1_reset_timers": {
+        "title": "Mode 1v1: Reset both timers",
+        "action-type": "custom",
+        "default": "Alt+Shift+R"
+      },
+      "map_showhide": {
+        "title": "Callout-Map: Show/Hide",
+        "action-type": "custom",
+        "default": "Alt+Shift+M"
+      },
+      "map_switch_variant": {
+        "title": "Callout-Map: Switch Variant (between maps of same name)",
+        "action-type": "custom",
+        "default": "Alt+V"
+      },
+      "map_browser": {
+        "title": "Callout-Map: Open Map-Browser",
+        "action-type": "custom",
+        "default": "Alt+M"
+      }
+    },
+    "force_browser": "user",
+    "windows": {
+      "background": {
+        "file": "background.html",
+        "background_optimization": true,
+        "is_background_page": true
+      },
+      "in_game": {
+        "file": "in_game.html",
+        "in_game_only": true,
+        "focus_game_takeover": "ReleaseOnHidden",
+        "focus_game_takeover_release_hotkey": "app_showhide",
+        "transparent": true,
+        "override_on_update": true,
+        "size": {
+          "width": 1200,
+          "height": 700
+        },
+        "min_size": {
+          "width": 800,
+          "height": 500
+        },
+        "resizable": true
+      },
+      "mode_1v1": {
+        "file": "mode_1v1.html",
+        "in_game_only": true,
+        "transparent": true,
+        "override_on_update": true,
+        "size": {
+          "width": 700,
+          "height": 170
+        },
+        "min_size": {
+          "width": 700,
+          "height": 170
+        }
+      },
+      "callouts": {
+        "file": "callouts.html",
+        "in_game_only": true,
+        "transparent": true,
+        "override_on_update": true,
+        "clickthrough": false,
+        "size": {
+          "width": 600,
+          "height": 800
+        },
+        "min_size": {
+          "width": 600,
+          "height": 800
+        },
+        "start_position": {
+          "top": 20,
+          "left": 20
+        }
+      },
+      "debug": {
+        "file": "debug.html",
+        "in_game_only": true,
+        "transparent": true,
+        "override_on_update": true,
+        "size": {
+          "width": 1280,
+          "height": 720
+        },
+        "min_size": {
+          "width": 300,
+          "height": 200
+        }
+      }
+    },
+    "game_targeting": {
+      "type": "dedicated",
+      "game_ids": [
+        10868
+      ]
+    },
+    "game_events": [
+      10868
+    ],
+    "launch_events": [
+      {
+        "event": "GameLaunch",
+        "event_data": {
+          "game_ids": [
+            10868
+          ]
+        },
+        "start_minimized": true
+      }
+    ],
+    "developer": {
+      "enable_auto_refresh": true,
+      "reload_delay": 1000,
+      "filter": "*.*"
+    }
+  }
+}
