@@ -8,7 +8,6 @@ export type CalloutSettings = {
 
   autoDetect: boolean;
 
-  show: boolean;
   showHotkeys: boolean;
 
   browser: boolean;
@@ -22,7 +21,6 @@ export const CALLOUT_SETTINGS = createStorage<CalloutSettings>('CALLOUT_SETTINGS
 
   autoDetect: true,
 
-  show: true,
   showHotkeys: true,
 
   map: null,

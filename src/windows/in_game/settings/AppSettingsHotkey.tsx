@@ -8,6 +8,7 @@ import { useAppSettings } from './use-app-settings';
 import { useIngameApp } from '../use-ingame-app';
 
 type HotkeyName = typeof kHotkeys[keyof typeof kHotkeys];
+type Descriptor = { mainKey: string | null; mods: Mods; vk: number | null; label: string };
 
 // --- Global edit state (only one chip can be in reassign mode) ---
 type EditStore = {
@@ -25,73 +26,58 @@ useAppSettings.subscribe(state => useHotkeyEditStore.getState().stop());
 useIngameApp.subscribe(state => useHotkeyEditStore.getState().stop());
 
 type Mods = { ctrl: boolean; alt: boolean; shift: boolean };
-const MOD_KEYS = new Set(['Control', 'Shift', 'Alt']);
+const MOD_VKS = new Set([16, 17, 18, 91, 92]); // Shift, Ctrl, Alt, Meta/Win
 
-const VK = {
-  ...Object.fromEntries(Array.from({ length: 26 }, (_, i) => [String.fromCharCode(65 + i), 65 + i])),
-  '0': 48, '1': 49, '2': 50, '3': 51, '4': 52, '5': 53, '6': 54, '7': 55, '8': 56, '9': 57,
-  ...Object.fromEntries(Array.from({ length: 24 }, (_, i) => [`F${i + 1}`, 112 + i])),
-  Numpad0: 96, Numpad1: 97, Numpad2: 98, Numpad3: 99, Numpad4: 100,
-  Numpad5: 101, Numpad6: 102, Numpad7: 103, Numpad8: 104, Numpad9: 105,
-  NumpadMultiply: 106, NumpadAdd: 107, NumpadSubtract: 109, NumpadDecimal: 110, NumpadDivide: 111,
-  Tab: 9, Enter: 13, Space: 32, Escape: 27, Backspace: 8,
-  ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40,
-  Minus: 189, Equal: 187, BracketLeft: 219, BracketRight: 221, Backslash: 220,
-  Semicolon: 186, Quote: 222, Comma: 188, Period: 190, Slash: 191, Backquote: 192,
-} as const;
-
-function keyEventToDescriptor(e: KeyboardEvent): { mainKey: string | null; mods: Mods; vk: number | null; label: string } {
+function keyEventToDescriptor(e: KeyboardEvent): Descriptor {
   const mods: Mods = { ctrl: e.ctrlKey, alt: e.altKey, shift: e.shiftKey };
+
+  // 1) VK direkt vom keydown – das ist genau das, was Overwolf erwartet
+  //    (docs: "virtualKey corresponds to the keyDown event")
+  //    https://dev.overwolf.com/.../hotkeys-api/
+  const vk = typeof (e as any).keyCode === 'number'
+    ? (e as any).keyCode as number
+    : (typeof (e as any).which === 'number' ? (e as any).which as number : null);
+
+  // 2) Für Label & Stabilität (Shift+1 etc.) 'mainKey' aus e.code/e.key ermitteln
   let mainKey: string | null = null;
 
-  // --- DIGITS: handle Shift+DigitX where e.key becomes '!', '@', etc.
-  // Use e.code 'Digit0'..'Digit9' which is layout-agnostic for the top row
+  // Top-row digits -> stabil über e.code "DigitX"
   if (/^Digit[0-9]$/.test(e.code)) {
     mainKey = e.code.replace('Digit', ''); // "Digit1" -> "1"
   }
 
-  // Letters/digits via e.key (works for plain '1' and letters)
-  if (!mainKey && e.key.length === 1) {
+  // Buchstaben & Ziffern via e.key (falls noch nichts gesetzt)
+  if (!mainKey && e.key && e.key.length === 1) {
     const ch = e.key.toUpperCase();
     if (/[A-Z0-9]/.test(ch)) mainKey = ch;
   }
 
-  // Function keys
+  // Funktionstasten
   if (!mainKey && /^F\d{1,2}$/.test(e.key)) {
     mainKey = e.key;
   }
 
-  // Additional commit-worthy keys (code-based)
-  const codeCandidates = [
+  // Sonstige commitwürdige Tasten (Pfeile, Navigation, Numpad, OEM)
+  const codeCandidates = new Set([
     'Tab', 'Space', 'Enter', 'Backspace',
+    'Insert', 'Delete', 'Home', 'End', 'PageUp', 'PageDown',
     'Minus', 'Equal', 'BracketLeft', 'BracketRight', 'Backslash',
     'Semicolon', 'Quote', 'Comma', 'Period', 'Slash', 'Backquote',
     'Numpad0', 'Numpad1', 'Numpad2', 'Numpad3', 'Numpad4', 'Numpad5', 'Numpad6', 'Numpad7', 'Numpad8', 'Numpad9',
     'NumpadMultiply', 'NumpadAdd', 'NumpadSubtract', 'NumpadDecimal', 'NumpadDivide',
     'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown',
-  ];
+  ]);
   if (!mainKey) {
     if (/^F\d{1,2}$/.test(e.code)) mainKey = e.code;
-    else if (codeCandidates.includes(e.code)) mainKey = e.code;
+    else if (codeCandidates.has(e.code)) mainKey = e.code;
   }
 
-  // Map to Windows VK
-  let vk: number | null = null;
-  if (mainKey) {
-    if (VK[mainKey as keyof typeof VK] !== undefined) {
-      vk = VK[mainKey as keyof typeof VK];
-    } else if (/^[A-Z]$/.test(mainKey)) {
-      vk = mainKey.charCodeAt(0);
-    } else if (/^\d$/.test(mainKey)) {
-      vk = mainKey.charCodeAt(0); // '0'..'9' -> 48..57
-    }
-  }
-
-  // Build UI label
+  // 3) Label aufhübschen (immer stabil, z. B. „Shift+1“ statt „Shift+!“)
   const parts: string[] = [];
   if (mods.ctrl) parts.push('Ctrl');
   if (mods.alt) parts.push('Alt');
   if (mods.shift) parts.push('Shift');
+
   if (mainKey) {
     const pretty =
       mainKey === 'BracketLeft' ? '[' :
@@ -107,14 +93,19 @@ function keyEventToDescriptor(e: KeyboardEvent): { mainKey: string | null; mods:
                           mainKey === 'Backquote' ? '`' :
                             mainKey;
     parts.push(pretty);
+  } else if (vk != null && !MOD_VKS.has(vk)) {
+    // Fallback: wenn wir keinen hübschen Namen haben (z.B. exotische Taste),
+    // wenigstens die VK-Zahl anzeigen
+    parts.push(`VK${vk}`);
   }
+
   const label = parts.length ? parts.join('+') : 'Press keys…';
   return { mainKey, mods, vk, label };
 }
 
-type Props<T extends HotkeyName> = { name: T };
+type Props<T extends HotkeyName> = { name: T, small?: boolean };
 
-export function SettingsHotkey<T extends HotkeyName>({ name }: Props<T>) {
+export function SettingsHotkey<T extends HotkeyName>({ name, small }: Props<T>) {
   const hotkeys = useHotkeys();
   const binding = hotkeys[name] || 'Unassigned';
 
@@ -207,7 +198,7 @@ export function SettingsHotkey<T extends HotkeyName>({ name }: Props<T>) {
     const onKeyDown = (e: KeyboardEvent) => {
       if (errorMsg) return;
 
-      // Cancel with Escape
+      // ESC bricht ab
       if (e.key === 'Escape') {
         e.preventDefault();
         e.stopPropagation();
@@ -218,19 +209,13 @@ export function SettingsHotkey<T extends HotkeyName>({ name }: Props<T>) {
       const { mainKey, mods, vk, label } = keyEventToDescriptor(e);
       setTempLabel(label);
 
-      // Prevent accidental activation in settings UI
+      // UI nicht auslösen
       e.preventDefault();
       e.stopPropagation();
 
-      // Commit on first non-modifier key
-      if (mainKey && vk != null && !committingRef.current) {
-        // Note: don't rely on e.key here; use computed mainKey/vk so that Shift+1 works.
-        if (!MOD_KEYS.has(e.key)) {
-          handleAssign(vk, mods);
-        } else {
-          // If e.key is a modifier but we computed a mainKey (rare), still commit.
-          handleAssign(vk, mods);
-        }
+      // Commit nur bei echter Haupttaste (kein reiner Mod) + gültigem VK
+      if (!committingRef.current && vk != null && !MOD_VKS.has(vk)) {
+        handleAssign(vk, mods);
       }
     };
 
@@ -261,6 +246,7 @@ export function SettingsHotkey<T extends HotkeyName>({ name }: Props<T>) {
 
   return (
     <Chip
+      size={small ? 'small' : undefined}
       label={label}
       color={errorMsg ? 'error' : reassigning ? 'primary' : 'default'}
       variant={reassigning ? 'outlined' : 'filled'}

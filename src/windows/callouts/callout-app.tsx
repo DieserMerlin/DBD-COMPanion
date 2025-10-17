@@ -10,6 +10,7 @@ import { useHotkeys } from "../../utils/hooks/hotkey-hook";
 import { BaseWindow } from "../../utils/window/AppWindow";
 import { CalloutMapBrowser } from "./browser/CalloutBrowser";
 import { CALLOUT_SETTINGS } from "./callout-settings";
+import { createStorage } from '../../utils/localstorage/typed-localstorage';
 
 const CustomChip = (props: { label: string, hotkey: string, style?: CSSProperties }) => {
   return (
@@ -29,18 +30,16 @@ const mockRealm: keyof typeof MapDirectory = "Autohaven Wreckers";
 const mockMapFile: typeof MapDirectory[typeof mockRealm][number] = "Wreckers Yard.webp";
 const mockMap = GameStateGuesser.makeMap({ realm: mockRealm, mapFile: mockMapFile, match: 1 });
 
+const useManualMap = createStorage<{ map: GameStateMap | null }>('CALLOUT_MANUAL_MAP', { map: null });
+const setManualMap = (map: GameStateMap | null) => useManualMap.update({ map });
+
 const CalloutView = (props: { mock: boolean, browser: boolean, direction: 'left' | 'right' }) => {
-  const show = CALLOUT_SETTINGS.hook(s => s.show) || props.mock;
   const showHotkeys = CALLOUT_SETTINGS.hook(s => s.showHotkeys);
 
   const _map = CALLOUT_SETTINGS.hook(s => s.map);
-  const [manualMap, setManualMap] = useState<GameStateMap | null>(null);
+  const manualMap = useManualMap.hook(s => s.map);
 
   const map = (_map || manualMap || (props.mock && mockMap));
-
-  useEffect(() => {
-    if (manualMap) CALLOUT_SETTINGS.update({ show: true, browser: false });
-  }, [manualMap]);
 
   const { map_browser, map_showhide, map_switch_variant } = useHotkeys();
 
@@ -52,10 +51,9 @@ const CalloutView = (props: { mock: boolean, browser: boolean, direction: 'left'
           {!!map && !!map.variants?.length && <CustomChip label="Switch Variant" hotkey={map_switch_variant} />}
           <CustomChip label="Map-Browser" hotkey={map_browser} />
         </>}
-        {!!map && !!show && !!map.credit && <CustomChip label="Graphic by" hotkey={map.credit} />}
+        {!!map && !!map.credit && <CustomChip label="Graphic by" hotkey={map.credit} />}
       </Grid>
       <motion.div
-        animate={{ opacity: show ? 1 : 0 }}
         style={{
           position: 'relative',
           width: '100%',

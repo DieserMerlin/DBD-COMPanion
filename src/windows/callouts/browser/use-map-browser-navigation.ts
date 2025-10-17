@@ -9,7 +9,7 @@ export const useMapBrowserNavigation = create<{
   next: () => void,
   previous: () => void,
   open: () => void,
-  close: () => void,
+  close: (fully?: boolean) => void,
   ref: { onOpenCallback: () => void }
 }>((set, get) => {
   const dir = () => useMapDir.getState().realms;
@@ -79,11 +79,14 @@ export const useMapBrowserNavigation = create<{
 
     open: () => {
       if (!get().realmOpen) set({ realmOpen: true });
-      else get().ref.onOpenCallback?.();
+      else {
+        get().ref.onOpenCallback?.();
+        get().close(true);
+      }
     },
 
-    close: () => {
-      if (get().realmOpen) set({ realmOpen: false });
+    close: (fully) => {
+      if (get().realmOpen && !fully) set({ realmOpen: false });
       else CALLOUT_SETTINGS.update({ browser: false });
     },
 

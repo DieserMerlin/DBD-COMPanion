@@ -8,6 +8,7 @@ import { AppSettings } from "./settings/AppSettings";
 import { AppWelcome } from "./welcome/AppWelcome";
 import { AnimatePresence, motion } from "motion/react";
 import { IngameAppTab, useIngameApp } from "./use-ingame-app";
+import { TutorialsOverlay } from "./welcome/AppTutorial";
 
 const MotionBox = motion(Box);
 
@@ -30,11 +31,14 @@ export const IngameApp = () => {
   const tab = useIngameApp(s => s.tab);
 
   return (
-    <BaseWindow>
+    <BaseWindow resizable>
+      <TutorialsOverlay />
       <TabContext value={tab}>
         <Stack m={0} p={0} overflow={"hidden"} width={"100vw"} height={"100vh"}>
           <Stack
             id="header"
+            position={'relative'}
+            zIndex={1000000000}
             direction={"row"}
             alignItems={"center"}
             spacing={1}

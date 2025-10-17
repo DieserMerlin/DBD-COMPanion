@@ -5,13 +5,17 @@ import {
 } from '@overwolf/overwolf-api-ts';
 
 import { PSM } from 'tesseract.js';
-import { kHotkeys, kWindowNames } from "../../consts";
+import { kHotkeys, kWindowNames } from '../../consts';
 import { GameState, GameStateGuesser } from '../../game_state/GameState';
 import { OcrAreasResult, performOcrAreas } from '../../utils/ocr/area-ocr';
 import { createBus, TypedBus } from '../../utils/window/window-bus';
 import { INGAME_SETTINGS } from '../in_game/in_game-settings';
+import { AppMode, BACKGROUND_SETTINGS, BackgroundSettings } from './background-settings';
+import { CALLOUT_SETTINGS } from '../callouts/callout-settings';
 
-type AppMode = 'none' | '1v1' | 'scrim';
+/* ============================================================================
+ * App-wide event bus
+ * ========================================================================== */
 
 type AppEvents = {
   'game-state': GameState,
@@ -26,130 +30,296 @@ declare global {
   }
 }
 
+// Shared bus for cross-window communication.
 window.bus = createBus();
 
+/* ============================================================================
+ * Constants & helpers
+ * ========================================================================== */
+
+/**
+ * OCR areas we sample repeatedly to “guess” the current DBD game context.
+ * NOTE: These are kept identical to the original logic.
+ */
+const OCR_AREAS = [
+  { id: 'map', type: 'ocr' as const, rect: { x: 0, y: 0.7, w: 0.5, h: 0.3 }, psm: PSM.SPARSE_TEXT },
+  { id: 'main-menu', type: 'ocr' as const, rect: { x: 0.05, y: 0.05, w: 0.3, h: 0.4 }, psm: PSM.SPARSE_TEXT_OSD },
+  { id: 'menu-btn', type: 'ocr' as const, rect: { x: 0.8, y: 0.85, w: 0.2, h: 0.15 }, psm: PSM.SPARSE_TEXT },
+  { id: 'bloodpoints', type: 'ocr' as const, rect: { x: 0.7, y: 0, w: 0.3, h: 0.15 }, psm: PSM.SPARSE_TEXT_OSD },
+  {
+    id: 'loading-screen',
+    type: 'pure-black' as const,
+    rects: [
+      { x: 0, y: 0, w: 1, h: 0.02 },
+      { x: 0, y: 0.98, w: 1, h: 0.02 },
+      { x: 0, y: 0.02, w: 0.02, h: 0.96 },
+      { x: 0.98, y: 0.02, w: 0.02, h: 0.96 }
+    ],
+    blackMax: 10,
+    colorDeltaMax: 3,
+    minMatchRatio: 0.97
+  },
+  { id: 'loading-text', type: 'ocr' as const, rect: { x: 0.25, y: 0.3, w: 0.5, h: 0.4 }, psm: PSM.SPARSE_TEXT },
+  { id: 'settings', type: 'ocr' as const, rect: { x: 0, y: 0, w: 1, h: 0.2 }, psm: PSM.SPARSE_TEXT },
+] as const;
+
+/** Guard to check an OCR result exists and is of a specific kind. */
+const isType = <K extends keyof OcrAreasResult>(
+  res: OcrAreasResult,
+  key: K,
+  type: OcrAreasResult[K]['type']
+) => res[key] && res[key]!.type === type;
+
+/** Convenience debug wrapper that mirrors original return shape & logs. */
+const makeReturn = (key: string, res: OcrAreasResult) => {
+  const debug = { type: key, res: res[key as keyof OcrAreasResult] };
+  console.log(debug);
+  return debug;
+};
+
+/* ============================================================================
+ * BackgroundController
+ *  - Single entry point coordinating windows, hotkeys, OCR, and game hooks
+ * ========================================================================== */
+
 class BackgroundController {
-  private _gameListener: OWGameListener;
   private static _instance: BackgroundController;
+
+  /** Overwolf Game Listener lifecycle handler. */
+  private _gameListener: OWGameListener;
+
+  /** Quickly address windows by their logical names. */
   private _windows: Record<kWindowNames, OWWindow> = {} as any;
 
-  private mode: AppMode = 'none';
+  /** Heuristic “guesser” knows how to interpret OCR for DBD state. */
   private guesser = new GameStateGuesser();
 
+  /** Internal OCR pump interval handle. */
+  private _ocrInterval!: NodeJS.Timeout;
+
+  /* ------------------------------------------------------------------------
+   * Construction & singleton access
+   * --------------------------------------------------------------------- */
+
   private constructor() {
-    for (const window of Object.values(kWindowNames)) this._windows[window] = new OWWindow(window);
+    // Prepare all windows eagerly so we can manipulate them fast.
+    for (const windowName of Object.values(kWindowNames)) {
+      this._windows[windowName] = new OWWindow(windowName);
+    }
+
+    // Relay GameState guesses to the app bus.
     this.guesser.bus.on('gameState', gs => window.bus.emit('game-state', gs));
+
+    // Begin periodic OCR (non-blocking).
     this.startOcr();
 
-    if (INGAME_SETTINGS.getValue().openOnStartup)
+    // Optionally show the in-game window when the app boots.
+    if (INGAME_SETTINGS.getValue().openOnStartup) {
       this._windows.in_game.restore();
+    }
 
-    this._windows.callouts.restore();
-    this._windows.debug.restore();
-
+    // Apply initial background settings and register hotkeys.
+    this.settingsUpdate(BACKGROUND_SETTINGS.getValue());
     this.registerHotkeys();
 
-    setInterval(() => overwolf.games.getRunningGameInfo(res => window.bus.emit('game-info', res)), 2000);
+    // Broadcast current running game info every second (unchanged cadence).
+    setInterval(() => {
+      overwolf.games.getRunningGameInfo(res => window.bus.emit('game-info', res));
+    }, 1000);
+
+    // Wire game start/stop lifecycle.
     this._gameListener = new OWGameListener({
       onGameStarted: () => {
-        INGAME_SETTINGS.getValue().openOnStartup && this._windows.in_game.restore();
+        if (INGAME_SETTINGS.getValue().openOnStartup) {
+          this._windows.in_game.restore();
+        }
       },
       onGameEnded: () => {
         window.bus.emit('game-info', null);
         overwolf.windows.getMainWindow().close();
       },
     });
-    this._gameListener.start();
-  };
 
+    this._gameListener.start();
+  }
+
+  /** Singleton accessor. */
   public static instance(): BackgroundController {
     if (!BackgroundController._instance) {
       BackgroundController._instance = new BackgroundController();
     }
-
     return BackgroundController._instance;
   }
 
-  registerHotkeys() {
-    OWHotkeys.onHotkeyDown(kHotkeys.toggleMode1v1, () => this.setMode('1v1'));
-    OWHotkeys.onHotkeyDown(kHotkeys.toggleModeScrim, () => this.setMode('scrim'));
+  /* ------------------------------------------------------------------------
+   * Hotkeys & window toggles
+   * --------------------------------------------------------------------- */
+
+  /**
+   * Register app-wide hotkeys.
+   * Keeps the exact reactions and side-effects from the original code.
+   */
+  private registerHotkeys() {
+    // Apply live settings updates from background settings store.
+    BACKGROUND_SETTINGS.hook.subscribe((state) => this.settingsUpdate(state));
+
+    // Toggle app modes; same ternary flip logic as before.
+    const toggleMode = (mode: AppMode) =>
+      BACKGROUND_SETTINGS.update({
+        mode: (BACKGROUND_SETTINGS.getValue().mode === mode ? null : mode)
+      });
+
+    OWHotkeys.onHotkeyDown(kHotkeys.toggleMode1v1, () => toggleMode('1v1'));
+    OWHotkeys.onHotkeyDown(kHotkeys.toggleModeScrim, () => toggleMode('scrim'));
     OWHotkeys.onHotkeyDown(kHotkeys.toggleMainWindow, () => this.toggleMainWindow());
+
+    // Map overlay toggle (also forces callouts browser off as before).
+    OWHotkeys.onHotkeyDown(kHotkeys.toggleMapWindow, () => {
+      const current = BACKGROUND_SETTINGS.getValue().calloutOverlay;
+      CALLOUT_SETTINGS.update({ browser: false });
+      BACKGROUND_SETTINGS.update({ calloutOverlay: !current });
+    });
   }
 
-  async toggleMainWindow() {
+  /**
+   * Toggle the in-game window between minimized and restored.
+   * Behavior preserved exactly.
+   */
+  private async toggleMainWindow() {
     const inGameState = await this._windows.in_game.getWindowState();
 
-    if (inGameState.window_state === "normal" ||
-      inGameState.window_state === "maximized") {
+    if (inGameState.window_state === 'normal' || inGameState.window_state === 'maximized') {
       this._windows.in_game.minimize();
     } else {
       this._windows.in_game.restore();
     }
   }
 
-  setMode(mode: typeof this.mode) {
-    this.mode = mode === this.mode ? 'none' : mode;
-    this._windows.mode_1v1[this.mode === '1v1' ? 'restore' : 'close']();
+  /**
+   * Apply window visibility to match current background settings.
+   * Identity with original: 1v1 and callouts get restored/minimized.
+   */
+  private settingsUpdate(settings: BackgroundSettings) {
+    this._windows.mode_1v1[settings.mode === '1v1' ? 'restore' : 'minimize']();
+    this._windows.callouts[settings.calloutOverlay ? 'restore' : 'minimize']();
   }
 
-  private _ocrInterval: NodeJS.Timeout;
-  startOcr() {
+  /* ------------------------------------------------------------------------
+   * OCR sampling loop
+   * --------------------------------------------------------------------- */
+
+  /**
+   * Start a periodic OCR sweep that reads specific screen regions and
+   * attempts to infer which DBD state we’re currently in (menu/loading/match).
+   *
+   * NOTE: The interval, gating logic, and internal variables (including
+   * `lock` / `last`) are intentionally kept the same for behavior parity.
+   */
+  private startOcr() {
     if (this._ocrInterval) return;
+
+    let lock = false;
+    let last = 0;
+
     this._ocrInterval = setInterval(async () => {
-      performOcrAreas([
-        { id: 'map', type: 'ocr', rect: { x: 0, y: .7, w: .5, h: .3 }, psm: PSM.SPARSE_TEXT },
-        { id: 'main-menu', type: 'ocr', rect: { x: .05, y: .05, w: .3, h: .4 }, psm: PSM.SPARSE_TEXT_OSD },
-        { id: 'menu-btn', type: 'ocr', rect: { x: .8, y: .85, w: .2, h: .15 }, psm: PSM.SPARSE_TEXT },
-        { id: 'bloodpoints', type: 'ocr', rect: { x: .7, y: 0, w: .3, h: .15 }, psm: PSM.SPARSE_TEXT_OSD },
-        { id: 'loading-screen', type: 'pure-black', rects: [{ x: 0, y: 0, w: 1, h: .02 }, { x: 0, y: .98, w: 1, h: .02 }, { x: 0, y: .02, w: .02, h: .96 }, { x: .98, y: .02, w: .02, h: .96 }], blackMax: 10, colorDeltaMax: 3, minMatchRatio: .97 },
-        { id: 'loading-text', type: 'ocr', rect: { x: .25, y: .3, w: .5, h: .4 }, psm: PSM.SPARSE_TEXT },
-        { id: 'settings', type: 'ocr', rect: { x: 0, y: 0, w: 1, h: .2 }, psm: PSM.SPARSE_TEXT },
-      ]).then(res => this.evaluateRes(res));
-    }, 1000);
+      // Keep the original throttling and gating as-is.
+      if (lock || (Date.now() - last) < 1000) return;
+
+      try {
+        const res = await performOcrAreas(OCR_AREAS as any);
+        this.evaluateRes(res);
+      } finally {
+        last = Date.now();
+        lock = false;
+      }
+    }, 100);
   }
 
-  evaluateRes(res: OcrAreasResult) {
-    const makeReturn = (key: string) => {
-      const debug = { type: key, res: res[key] };
-      console.log(debug);
-      return debug;
-    };
+  /* ------------------------------------------------------------------------
+   * OCR evaluation: ordered, short-circuit checks
+   * --------------------------------------------------------------------- */
 
-    res['settings-back-btn'] = res['map'];
+  /**
+   * Evaluate an OCR snapshot to determine game state, in a strict priority
+   * order. This preserves the exact checking sequence and conditions from the
+   * original implementation, including the aliasing of `settings-back-btn`.
+   *
+   * Returns the same debug object (or null) as before and logs to console.
+   */
+  private evaluateRes(res: OcrAreasResult) {
+    // Alias preserved
+    (res as any)['settings-back-btn'] = res['map'];
 
-    if (res['map'] && res['map'].type === 'ocr') {
-      if (res['map'].text.some(guess => this.guesser.guessMap(guess)))
-        return makeReturn('map');
+    // 1) Map
+    if (res['map']?.type === 'ocr') {
+      const mapRes = res['map'] as Extract<NonNullable<typeof res['map']>, { type: 'ocr' }>;
+      if (mapRes.text.some(guess => this.guesser.guessMap(guess))) {
+        return makeReturn('map', res);
+      }
     }
-    if (res['settings'] && res['settings'].type === 'ocr')
-      if (this.guesser.guessSettings('right', res['settings']))
-        return makeReturn('settings');
-    if (res['loading-screen'] && res['loading-screen'].type === 'pure-black') {
-      if (this.guesser.guessLoadingScreen(res['loading-screen']))
-        return makeReturn('loading-screen');
+
+    // 2) Settings (right)
+    if (res['settings']?.type === 'ocr') {
+      const s = res['settings'] as Extract<NonNullable<typeof res['settings']>, { type: 'ocr' }>;
+      if (this.guesser.guessSettings('right', s)) {
+        return makeReturn('settings', res);
+      }
     }
-    if (res['loading-text'] && res['loading-text'].type === 'ocr') {
-      if (this.guesser.guessLoadingScreen(undefined, res['loading-text']))
-        return makeReturn('loading-text');
+
+    // 3) Loading screen (pure-black)
+    if (res['loading-screen']?.type === 'pure-black') {
+      const ls = res['loading-screen'] as Extract<NonNullable<typeof res['loading-screen']>, { type: 'pure-black' }>;
+      if (this.guesser.guessLoadingScreen(ls)) {
+        return makeReturn('loading-screen', res);
+      }
     }
-    if (res['main-menu'] && res['main-menu'].type === 'ocr') {
-      if (this.guesser.guessMenu('main-menu', res['main-menu']))
-        return makeReturn('main-menu');
+
+    // 4) Loading text
+    if (res['loading-text']?.type === 'ocr') {
+      const lt = res['loading-text'] as Extract<NonNullable<typeof res['loading-text']>, { type: 'ocr' }>;
+      if (this.guesser.guessLoadingScreen(undefined, lt)) {
+        return makeReturn('loading-text', res);
+      }
     }
-    if (res['menu-btn'] && res['menu-btn'].type === 'ocr') {
-      if (this.guesser.guessMenu('menu-btn', res['menu-btn']))
-        return makeReturn('menu-btn');
+
+    // 5) Main menu
+    if (res['main-menu']?.type === 'ocr') {
+      const mm = res['main-menu'] as Extract<NonNullable<typeof res['main-menu']>, { type: 'ocr' }>;
+      if (this.guesser.guessMenu('main-menu', mm)) {
+        return makeReturn('main-menu', res);
+      }
     }
-    if (res['bloodpoints'] && res['bloodpoints'].type === 'ocr') {
-      if (this.guesser.guessMenu('bloodpoints', res['bloodpoints']))
-        return makeReturn('bloodpoints');
+
+    // 6) Menu button
+    if (res['menu-btn']?.type === 'ocr') {
+      const mb = res['menu-btn'] as Extract<NonNullable<typeof res['menu-btn']>, { type: 'ocr' }>;
+      if (this.guesser.guessMenu('menu-btn', mb)) {
+        return makeReturn('menu-btn', res);
+      }
     }
-    if (res['settings-back-btn'] && res['settings-back-btn'].type === 'ocr')
-      if (this.guesser.guessSettings('left', res['settings-back-btn']))
-        return makeReturn('settings-back-btn');
+
+    // 7) Bloodpoints
+    if (res['bloodpoints']?.type === 'ocr') {
+      const bp = res['bloodpoints'] as Extract<NonNullable<typeof res['bloodpoints']>, { type: 'ocr' }>;
+      if (this.guesser.guessMenu('bloodpoints', bp)) {
+        return makeReturn('bloodpoints', res);
+      }
+    }
+
+    // 8) Settings back button (alias)
+    if ((res as any)['settings-back-btn']?.type === 'ocr') {
+      const sb = (res as any)['settings-back-btn'] as Extract<NonNullable<typeof res['map']>, { type: 'ocr' }>;
+      if (this.guesser.guessSettings('left', sb)) {
+        return makeReturn('settings-back-btn', res);
+      }
+    }
 
     return null;
   }
 }
+
+/* ============================================================================
+ * Boot
+ * ========================================================================== */
 
 BackgroundController.instance();

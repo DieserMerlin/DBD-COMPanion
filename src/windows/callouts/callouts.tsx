@@ -83,10 +83,6 @@ export class Callouts extends AppWindow {
       const current = CALLOUT_SETTINGS.getValue().browser;
       CALLOUT_SETTINGS.update({ browser: !current });
     });
-    OWHotkeys.onHotkeyDown(kHotkeys.toggleMapWindow, () => {
-      const current = CALLOUT_SETTINGS.getValue().show;
-      CALLOUT_SETTINGS.update({ show: !current });
-    });
     overwolf.games.inputTracking.onKeyDown.addListener(e => this.navigateMapBrowser(e.key))
   }
 
